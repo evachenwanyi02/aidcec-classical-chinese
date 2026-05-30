@@ -131,6 +131,26 @@
         .ai-feedback { margin-top: 15px; padding: 15px; background: #f8f9fa; border-left: 4px solid var(--accent-teal); border-radius: 4px; font-size: 15px; display: none; max-height: 200px; overflow-y: auto; line-height: 1.6; }
         .btn-submit { background: var(--primary-color); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
         .btn-cancel { background: #eee; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-right: 10px; color: #333; }
+        /* 🆕 AI 批改進度條樣式 */
+        .progress-container {
+            width: 100%;
+            background-color: #e2e8f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 10px;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .progress-bar {
+            width: 0%;
+            height: 20px;
+            background: linear-gradient(90deg, #8ba294, #538066);
+            color: white;
+            text-align: center;
+            line-height: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            transition: width 0.4s ease-out; /* 讓進度條滾動時有平滑感 */
+        }
     </style>
 </head>
 <body>
@@ -281,13 +301,29 @@
 <div id="ai-modal">
     <div class="modal-content">
         <h3 style="margin-top:0; color:var(--primary-color);">AI 老師評閱</h3>
-        <p style="font-size:15px; color:#666;">原文：<span id="modal-original-text" style="color:var(--text-main); font-weight:bold; font-family: 'Kaiti TC', serif; font-size:18px;"></span></p>
-        <textarea id="student-translation" placeholder="請在此處輸入你的白話文翻譯..."></textarea>
-        <div style="text-align: right;">
-            <button class="btn-cancel" onclick="closeModal()">關閉</button>
-            <button class="btn-submit" onclick="submitTranslation()">提交批改</button>
+        <p style="font-size:15px; color:#666; margin-bottom: 15px;">
+            原文：<span id="modal-original-text" style="color:var(--text-main); font-weight:bold; font-family: 'Kaiti TC', serif; font-size:18px;"></span>
+        </p>
+
+        <div id="ai-input-area">
+            <textarea id="student-translation" placeholder="請在此處輸入你的白話文翻譯..."></textarea>
+            <div style="text-align: right;">
+                <button class="btn-cancel" onclick="closeModal()">關閉</button>
+                <button class="btn-submit" onclick="submitTranslation()">提交批改</button>
+            </div>
         </div>
-        <div id="ai-loading" style="display:none; font-size:14px; color:var(--primary-color); margin-top:10px;">老師正在批閱中，請稍候...</div>
+
+        <div id="student-translation-readonly" style="display: none; background: #f9fbf9; border-left: 4px solid var(--accent-teal); padding: 12px; margin-bottom: 15px; border-radius: 4px;">
+            <strong style="color: var(--primary-color); display: block; margin-bottom: 5px; font-size: 14px;">✍️ 你的翻譯：</strong>
+            <p id="display-student-text" style="margin: 0; font-size: 15px; white-space: pre-wrap; color: #333; line-height: 1.5;"></p>
+        </div>
+
+        <div id="ai-loading" class="loading" style="display: none;">
+            <div style="margin-bottom: 10px;">📋 AI 老師正在仔細閱讀及批改中，請稍候...</div>
+            <div class="progress-container">
+                <div id="ai-progress-bar" class="progress-bar">0%</div>
+            </div>
+        </div>
         <div class="ai-feedback" id="ai-feedback"></div>
     </div>
 </div>
@@ -451,10 +487,19 @@
         setTimeout(() => document.getElementById('student-translation').focus(), 100);
     }
 
-    function closeModal() { document.getElementById('ai-modal').style.display = 'none'; }
+    function closeModal() {
+        document.getElementById('ai-modal').style.display = 'none';
+        
+        // 📥 關閉彈窗時，將所有元件的顯示狀態重設為初始值
+        document.getElementById('ai-input-area').style.display = 'block';
+        document.getElementById('student-translation').style.display = 'block'; // 恢復輸入框
+        document.getElementById('ai-input-area').querySelector('.btn-submit').style.display = 'inline-block'; // 恢復提交按鈕
+        
+        document.getElementById('student-translation-readonly').style.display = 'none';
+        document.getElementById('student-translation').value = ''; // 清空字串
+    }
 
     async function submitTranslation() {
-        // 💡 1. 改成動態獲取畫面上輸入的金鑰，並刪除原本那行寫死的常數
         const activeApiKey = document.getElementById('minimax-key-input').value.trim();
         
         if (!activeApiKey) {
@@ -464,39 +509,104 @@
         const studentText = document.getElementById('student-translation').value.trim();
         if (!studentText) return alert("請輸入你的翻譯喔！");
 
+        // 💡 🆕 UX 關鍵魔術：隱藏輸入區塊與按鈕，把內容填入純文字唯讀區並顯示，版面完美往上挪！
+        document.getElementById('ai-input-area').style.display = 'none';
+        document.getElementById('display-student-text').innerText = studentText;
+        document.getElementById('student-translation-readonly').style.display = 'block';
+
+        // 💡 初始化進度條
+        const progressBar = document.getElementById('ai-progress-bar');
+        progressBar.style.width = '0%';
+        progressBar.innerText = '正在連線 AI 老師... 0%';
+        
         document.getElementById('ai-loading').style.display = 'block';
         document.getElementById('ai-feedback').style.display = 'none';
+        document.getElementById('ai-feedback').innerText = ''; 
 
         try {
             const resp = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
                 method: 'POST',
-                // 💡 2. 這裡的 Authorization 帶入我們剛剛在畫面上拿到的 activeApiKey
                 headers: { 
                     'Content-Type': 'application/json', 
                     'Authorization': `Bearer ${activeApiKey}` 
                 },
                 body: JSON.stringify({
                     model: "abab6.5s-chat",
+                    stream: true, 
                     messages: [
                         { role: "system", name: "teacher", content: "你是一位專業溫和的香港中學語文教師。請用繁體中文回答，指出學生翻譯的優缺點並給出正確答案。" },
                         { role: "user", name: "student", content: `請評改這句文言文翻譯。原文：${selectedSentence}，我的翻譯：${studentText}` }
                     ]
                 })
             });
-            const res = await resp.json();
-            
-            // 💡 3. 增加一個防錯，如果老師把 Key 填錯了，能彈窗提醒
-            if (res.error) {
-                throw new Error(res.error.message || "API 認證失敗");
+
+            if (!resp.ok) {
+                const errRes = await resp.json().catch(() => ({}));
+                throw new Error(errRes.error?.message || `HTTP 錯誤 ${resp.status}`);
             }
 
-            const feedback = res.choices[0].message.content;
-            document.getElementById('ai-feedback').innerText = feedback;
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let done = false;
+            let fullText = "";
+            
+            let receivedChunks = 0; 
+            const estimatedMaxChunks = 25; 
+
             document.getElementById('ai-feedback').style.display = 'block';
+
+            while (!done) {
+                const { value, done: doneReading } = await reader.read();
+                done = doneReading;
+                if (done) break;
+
+                receivedChunks++;
+                const chunkStr = decoder.decode(value, { stream: true });
+                
+                const lines = chunkStr.split("\n");
+                for (const line of lines) {
+                    if (line.startsWith("data:")) {
+                        try {
+                            const jsonStr = line.replace("data:", "").trim();
+                            if (jsonStr === "[DONE]") {
+                                done = true;
+                                break;
+                            }
+                            const parsed = JSON.parse(jsonStr);
+                            const content = parsed.choices[0]?.delta?.content || "";
+                            if (content) {
+                                fullText += content;
+                                document.getElementById('ai-feedback').innerText = fullText;
+                            }
+                        } catch (e) {}
+                    }
+                }
+
+                let realProgress = Math.min(Math.floor((receivedChunks / estimatedMaxChunks) * 90), 90);
+                progressBar.style.width = realProgress + '%';
+                progressBar.innerText = `老師正在批改中... ${realProgress}%`;
+            }
+
+            progressBar.style.width = '100%';
+            progressBar.innerText = '100% 批改完成！';
+
+            // ✨【新增修復邏輯】當 AI 成功批改完成後，讓包含「關閉」按鈕的區域重新顯示
+            // 但要把裡面的 textarea 和提交按鈕藏起來，只留下「關閉」按鈕
+            document.getElementById('ai-input-area').style.display = 'block';
+            document.getElementById('student-translation').style.display = 'none'; // 隱藏輸入框
+            document.getElementById('ai-input-area').querySelector('.btn-submit').style.display = 'none'; // 隱藏提交按鈕
+
         } catch (e) {
-            alert("請求失敗！請檢查你的 API Key 是否正確、賬戶餘額是否充足，或網路是否連通。");
+            alert(`請求失敗！錯誤原因：${e.message}`);
             console.error(e);
+
+            // 💡 發生錯誤時的恢復機制：完整還原輸入介面
+            document.getElementById('ai-input-area').style.display = 'block';
+            document.getElementById('student-translation').style.display = 'block';
+            document.getElementById('ai-input-area').querySelector('.btn-submit').style.display = 'inline-block';
+            document.getElementById('student-translation-readonly').style.display = 'none';
         } finally {
+            await new Promise(resolve => setTimeout(resolve, 500));
             document.getElementById('ai-loading').style.display = 'none';
         }
     }
